@@ -1,118 +1,159 @@
 #### RANGE SIZE BIRDS ####
 
 ## packages
-library(tidyverse)
-library(terra)
-library(lme4)
-library(lmerTest)
-library(ggeffects)
-library(cowplot)
+pkgs<-c("tidyverse", "lme4", "lmerTest", "ggeffects", "cowplot", "parameters")
+invisible(lapply(pkgs, library, character.only = TRUE))
 
-## range shift data
-data<-read.csv("data/gen_data_final_fonseca.csv") %>% 
+#### DATA PREP ####
+
+## bioshifts data
+bioshifts<-read.csv("data/gen_data_final_fonseca.csv") %>% 
   filter(Class=="Aves",
-         shift_vel_sign %in% c("pospos","negneg")) %>% 
+         shift_vel_sign %in% c("pospos","negneg"),
+         Type=="LAT") %>% 
   select(sp=sp_name_std_v1, pi=Nucleotide_diversity) %>% 
   distinct()
 
 ## avonet data
 avonet<-readxl::read_excel("data/avonet-data.xlsx", sheet = 2) %>% 
-  right_join(data, by=c("Species1"="sp")) %>% 
+  select(sp=Species1, order=Order1, Range.Size, Centroid.Latitude, Migration)
+
+avonet<-read.csv("data/avonet-data.csv") %>% 
+  select(sp=Species1, order=Order1, Range.Size, Centroid.Latitude, Migration)
+
+## mmismatched species - just fixing manually
+bioshifts %>% filter(!sp %in% avonet$sp) %>% pull(sp)
+bioshifts[bioshifts$sp=="Coloeus monedula",]$sp<-"Corvus monedula"
+bioshifts[bioshifts$sp=="Phylloscopus sibillatrix",]$sp<-"Phylloscopus sibilatrix"
+bioshifts[bioshifts$sp=="Charadrius morinellus",]$sp<-"Eudromias morinellus"
+bioshifts[bioshifts$sp=="Chroicocephalus ridibundus",]$sp<-"Larus ridibundus"
+bioshifts[bioshifts$sp=="Cuculus optatus",]$sp<-"Cuculus horsfieldi" # no range data in avonet
+bioshifts[bioshifts$sp=="Luscinia svecica",]$sp<-"Cyanecula svecica"
+bioshifts[bioshifts$sp=="Spizelloides arborea",]$sp<-"Passerella arborea"
+bioshifts[bioshifts$sp=="Tetrastes bonasia",]$sp<-"Bonasa bonasia"
+
+## combine
+data<-bioshifts %>%
+  filter(pi>0, sp %in% avonet$sp) %>% 
+  # losing that one cuckoo with no range data and several species with pi=0??
+  left_join(avonet, by=c("sp")) %>% 
   mutate(range_size=as.numeric(Range.Size),
-         lat=abs(as.numeric(Centroid.Latitude))) %>% 
-  filter(pi>0, !is.na(Order1)) %>% 
-  mutate(order=factor(Order1),
+         lat=abs(as.numeric(Centroid.Latitude)),
+         order=factor(order),
          migration=factor(case_when(
            Migration == "1" ~ 1,
-           Migration %in% c("2", "3") ~ 2,
-           TRUE ~ NA_real_)))
+           Migration %in% c("2", "3") ~ 2)))
+
+## summary - n=335 species across 18 orders
+summary(data)
+
+#### QUICK PLOTS ####
 
 ## pi ~ range size
-ggplot(avonet, aes(x=log(range_size), y=log(pi)))+
+ggplot(data, aes(x=log(range_size), y=log(pi)))+
   geom_point()+
   geom_smooth(method="lm")+
   theme_bw()
 
 ## pi ~ latitude
-ggplot(avonet, aes(x=lat, y=log(pi)))+
+ggplot(data, aes(x=lat, y=log(pi)))+
   geom_point()+
   geom_smooth(method="lm")+
   theme_bw()
 
-## latitude lm
-lm(log(pi) ~ lat, data=avonet) %>% summary()
-lat_model<-lmer(log(pi) ~ lat + (1 | order), data=avonet)
+## pi ~ order
+ggplot(data, aes(x=order, y=log(pi)))+
+  geom_boxplot()+
+  theme_bw()
 
-## LMM with order as random effect
+#### LINEAR MIXED MODELS ####
+
+## latitude lmm
+lat_model<-lmer(log(pi) ~ lat + (1 | order), data=data)
+summary(lat_model)
+model_parameters(lat_model, standardize = "refit")
+
+## range size lmm with order as random effect
 model<-lmer(log(pi) ~ log(range_size) + lat + (1 | order), 
-            data=avonet)
+            data=data)
 summary(model)
+model_parameters(model, standardize = "refit")
 
 ## migration should maybe be in there
 model_migration<-lmer(log(pi) ~ log(range_size) + lat + migration + (1 | order), 
-                      data=avonet)
+                      data=data)
 summary(model_migration)
 
 ## without latitude
-model_nolat<-lmer(log(pi) ~ log(range_size) + (1 | migration) + (1 | order), 
-                      data=avonet)
+model_nolat<-lmer(log(pi) ~ log(range_size) + (1 | order), 
+                      data=data)
 summary(model_nolat)
+model_parameters(model_nolat, standardize = "refit")
+
+#### EFFECT OF RANGE SIZE ####
 
 ## get marginal effects
 pred_data<-ggpredict(model, terms = "range_size [n=20]", back_transform = FALSE)
 
 ## plotting
 model_label<-"log(pi) %~% log('range size') + 'abs(latitude)' + (1 * '|' * order)"
-model_plot<-ggplot(filter(avonet, range_size > exp(10)), aes(x = log(range_size), y = log(pi))) +
+model_plot<-ggplot(filter(data, range_size > exp(12)), aes(x = log(range_size), y = log(pi))) +
   geom_point(alpha = 0.75, color="grey") +
-  geom_line(data = filter(pred_data, x>exp(10)), aes(x = log(x), y = predicted), color = "orange", linewidth = 1) +
-  geom_ribbon(data = filter(pred_data, x>exp(10)), aes(x = log(x), ymin = conf.low, ymax = conf.high), 
+  geom_line(data = filter(pred_data, x>exp(12)), aes(x = log(x), y = predicted), color = "orange", linewidth = 1) +
+  geom_ribbon(data = filter(pred_data, x>exp(12)), aes(x = log(x), ymin = conf.low, ymax = conf.high), 
               alpha = 0.2, fill = "orange") +
-  annotate("text", x = 14, y = -8.85, label = model_label, size = 3.5, parse=T, color="grey35") +
+  annotate("text", x = 15, y = -8.85, label = model_label, size = 3.5, parse=T, color="grey35") +
   labs(
     x = expression(log(range~size)),
     y = expression(log(pi)))+
   theme_bw() +
   theme(panel.grid = element_blank())
 
-## pi ~ latitude nice
+#### EFFECT OF LATITUDE ####
+
+## predict latitude effect
 lat_pred<-ggpredict(lat_model, terms = "lat [n=20]", back_transform = FALSE)
-lat_label<-"log(pi) %~% 'abs(latitude)' + (1 * '|' * order)"
-lat_plot<-ggplot(avonet, aes(x=lat, y=log(pi)))+
+
+## plotting
+lat_plot<-ggplot(data, aes(x=lat, y=log(pi)))+
   geom_point(alpha = 0.75, color="grey") +
   geom_line(data = lat_pred, aes(x = x, y = predicted), color = "orange", linewidth = 1) +
   geom_ribbon(data = lat_pred, aes(x = x, ymin = conf.low, ymax = conf.high), 
               alpha = 0.2, fill = "orange") +
-  annotate("text", x = 40, y = -8.85, label = lat_label, size = 3.5, parse=T, color="grey35") +
-  labs(
-    x = "abs(latitude)",
-    y = expression(log(pi)))+
+  annotate("text",
+           x = 40, y = -8.85, 
+           label = "log(pi) %~% 'abs(latitude)' + (1 * '|' * order)", 
+           size = 3.5, parse=T, color="grey35") +
+  labs(x = "abs(latitude)",
+       y = expression(log(pi)))+
   theme_bw() +
   theme(panel.grid = element_blank())
 
-## pi ~ order
-y_top<-log(max(order_data$pi))
-y_bottom<-log(min(order_data$pi))
+#### EFFECT OF PHYLOGENY ####
 
-order_means<-avonet %>% 
+## median pi by order
+order_means<-data %>% 
   group_by(order) %>% 
   summarise(med_pi=median(pi),
             n=n()) %>% 
   filter(n>2) %>% 
-  arrange(med_pi) %>% 
-  mutate(pos=c(rep(y_top, 6), rep(y_bottom, 6)))
+  arrange(med_pi)
 
-h<-c(rep(0.9, 6), rep(0.1, 6))
-
-order_data<-filter(avonet, order %in% count(avonet,order)[count(avonet,order)$n>2,]$order) %>% 
+## data for figure
+order_data<-filter(data, order %in% count(data,order)[count(data,order)$n>2,]$order) %>% 
   mutate(order=factor(order, levels = order_means$order))
 
+y_top<-log(max(order_data$pi))
+y_bottom<-log(min(order_data$pi))
+order_means<-order_means %>% mutate(pos=c(rep(y_top, 6), rep(y_bottom, 6)))
+
+## plotting
 order_plot<-ggplot(order_data, aes(x = order, y = log(pi))) +
   geom_boxplot(fill = "orange", alpha = 0.5) +
   geom_text(data=order_means,
             aes(label = order, x = order, y = pos), 
             angle = 90,           
-            hjust = h,         
+            hjust = c(rep(0.9, 6), rep(0.1, 6)),         
             vjust = 1.5,          
             size = 3.5, 
             check_overlap = TRUE) +
@@ -123,14 +164,17 @@ order_plot<-ggplot(order_data, aes(x = order, y = log(pi))) +
         axis.text.x = element_text(color="white"),
         axis.ticks.x = element_blank())
 
+#### SAVING FIGURE ####
+
 ## combine
-main_plot<-plot_grid(order_plot, lat_plot, model_plot, 
+main_plot<-plot_grid(order_plot, lat_plot, model_plot,
           nrow = 1,
-          labels = c('A', 'B', 'C'), 
+          labels = c('A', 'B', 'C'),
           label_size = 14,
-          align = 'vh',       
+          align = 'vh',
           axis = 'tblr')
 
+## saving
 ggsave(main_plot, 
        filename = "figures/main-plot.tiff",
        device = "tiff",
