@@ -1,0 +1,513 @@
+---
+title: "Linking genetic diversity to range shift dynamics"
+output: word_document
+date: "2026-05-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
+#required packages
+list.of.packages <- c(
+  #"doParallel", "parallel","foreach",
+  #"pbapply",
+  "dplyr", "tidyr", #"data.table",
+  #"scales","effects","psych", 
+  "glmmTMB", "lme4", "lmerTest",#"here","rlist","partR2",
+  #"ggtext","gridExtra","grid","lattice","viridis",
+  "performance","MuMIn")#,"glmm.hp") 
+#
+#
+#new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+#
+#if(length(new.packages)) install.packages(new.packages)
+#
+sapply(list.of.packages, require, character.only = TRUE)
+
+###########################
+#define the data repository
+#if(!dir.exists(here("Output/full_model"))){
+#  dir.create(here("Output/full_model"),recursive = TRUE)
+#}
+#
+#dir.in=here("Data") #to change accordingly to the location of the data
+#dir.out=here("Output/full_model") #to change. It's the repository where the results are saved
+
+# Load data
+#mydataset <- read.csv2(here(dir.in,"gen_data_final_fonseca.csv"),
+#                       sep=",",dec=".",h=T) 
+
+
+```
+
+```{r dataselection, message = FALSE, warning=FALSE}
+# load data
+mydataset <- read.csv('data/gen_data_final_fonseca.csv')
+
+#Data selection
+## Latitude data
+mydatatogo <- mydataset  %>%
+  dplyr::filter(Type == "LAT",
+                shift_vel_sign == "pospos" | shift_vel_sign == "negneg", # Select only shifts in the same direction of velocity
+                SHIFT != 0, # remove non-significant shifts
+                # Nucleotide_diversity > 0 # select only GD values > 0
+  ) %>% 
+  mutate(
+    # Climate velocity
+    vel = as.numeric(velocity),
+    vel_abs = abs(vel),
+    vel_abs_log = log(vel_abs),
+    vel_abs_log1p = log1p(vel_abs),
+    
+    # Shift
+    SHIFT = SHIFT, # to deal with zero shift
+    SHIFT_abs = abs(SHIFT),
+    SHIFT_abs_log = log(SHIFT_abs),
+    SHIFT_abs_log1p = log1p(SHIFT_abs),
+    
+    # Genetic diversity
+    GD = Nucleotide_diversity, 
+    GD_sqrt = sqrt(GD),
+    GD_log = log(GD),
+    GD_log1p = log1p(GD),
+    
+    # Methods
+    Lat = abs(Latitude),
+    Lat_band = round(Lat,0),
+    ID.area = scale(ID.area),
+    DUR = scale(DUR),
+    LogExtent = log(Extent),
+    START = scale(START),
+    Param = factor(Param),
+    Group = factor(Group),
+    spp = factor(spp), 
+    ExtentF = cut(Extent,
+                  ordered_result = TRUE,
+                  breaks=seq(min(Extent), max(Extent), length.out=10),
+                  include.lowest=TRUE),
+    NtempUnitsF = cut(NtempUnits,
+                      ordered_result = TRUE,
+                      breaks=seq(min(NtempUnits), max(NtempUnits), length.out=10),
+                      include.lowest=TRUE)) %>%
+  
+  dplyr::select(
+    # Genetic diversity
+    GD, GD_log, GD_log1p, GD_sqrt, TajimasD,
+    # Shift
+    SHIFT, SHIFT_abs, SHIFT_abs_log, SHIFT_abs_log1p, 
+    # SHIFT_cor, SHIFT_cor_abs, SHIFT_cor_abs_log, SHIFT_cor_raw, SHIFT_abs_log_scale,
+    # Velocity
+    vel, vel_abs, vel_abs_log, vel_abs_log1p, 
+    trend.mean,
+    # Methods + Taxonomy
+    Article_ID, 
+    Hemisphere,
+    shift_vel_sign,
+    Lat, # latitudinal position where GD was collected
+    Lat_band,
+    DUR, Nperiodes, LogNtempUnits, NtempUnits, Extent, LogExtent, ContinuousGrain, Quality, PrAb, ExtentF, NtempUnitsF,
+    Param, Group, spp, Class, Order, Family, Genus, 
+    ECO, Uncertainty_Parameter, Uncertainty_Distribution, Grain_size, Data, Article_ID
+  ) 
+
+# transform continuous variables
+cont_vars <- c(1:14,18, 20:26)
+
+mydatatogo[,cont_vars] <- lapply(mydatatogo[,cont_vars], as.numeric)
+mydatatogo[,-cont_vars] <- lapply(mydatatogo[,-cont_vars], function(x) factor(x, levels = unique(x)))
+
+##eliminating species with uncertain obs
+mydatatogo=subset(mydatatogo,spp!="Agrilus planipennis")
+mydatatogo=subset(mydatatogo,spp!="Chrysodeixis eriosoma")
+mydatatogo=droplevels(mydatatogo)
+
+## Filter Classes with at least 5 species per Param
+n_sps = 10
+
+test <- mydatatogo %>%
+  group_by(Class,Param) %>%
+  summarise(N_spp = length(unique(spp))) %>% # how many species per parameter?
+  dplyr::filter(N_spp >= n_sps) # select classes with > n_sps per param
+
+test <- mutate(test, Class_Param = paste(Class, Param))
+
+mydatatogo <- mydatatogo %>%
+  mutate(Class_Param = paste(Class, Param)) %>%
+  dplyr::filter(Class_Param %in% test$Class_Param) %>%
+  dplyr::select(-Class_Param)
+
+mydatatogo[,-cont_vars] <- lapply(mydatatogo[,-cont_vars], function(x) factor(x, levels = unique(x)))
+
+## Extra fixes
+# Set the reference param level to the centroid of species obs
+mydatatogo$Param <- relevel(mydatatogo$Param, ref = "O") 
+
+# Taxonomy data
+taxatable <- mydatatogo %>%
+  group_by(Class, Order, Family) %>%
+  summarise(Species = length(unique(spp)),
+            Shift = n())
+
+#write.csv(taxatable,
+#          here("Output/taxa_table.csv"),
+#          row.names = FALSE)
+
+```
+
+
+## Model weights
+
+```{r weights}
+#### Variance partitioning #####
+
+mydatatogo2=mydatatogo
+mydatatogoCE=subset(mydatatogo2,Param=="O")
+x1=data.frame(table(mydatatogoCE$spp))
+x1=subset(x1,Freq>0)
+x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+mydatatogoCE=merge(mydatatogoCE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+
+mydatatogoLE=subset(mydatatogo2,Param=="LE")
+x1=data.frame(table(mydatatogoLE$spp))
+x1=subset(x1,Freq>0)
+x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+mydatatogoLE=merge(mydatatogoLE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+
+mydatatogoTE=subset(mydatatogo2,Param=="TE")
+x1=data.frame(table(mydatatogoTE$spp))
+x1=subset(x1,Freq>0)
+x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+mydatatogoTE=merge(mydatatogoTE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+
+mydatatogoTE$weight_obs_spp=mydatatogoTE$weight_obs_spp*(1/3)
+mydatatogoCE$weight_obs_spp=mydatatogoCE$weight_obs_spp*(1/3)
+mydatatogoLE$weight_obs_spp=mydatatogoLE$weight_obs_spp*(1/3)
+
+mydatatogo2=rbind(mydatatogoTE,mydatatogoCE,mydatatogoLE)
+
+mydatatogo2$vel_abs_s <- scale(mydatatogo2$vel_abs)
+mydatatogo2$GD_s <- scale(mydatatogo2$GD)
+```
+
+## Model weights sum to 1:
+```{r weightsum}
+sum(mydatatogo2$weight_obs_spp)
+```
+
+## Fit model:
+
+```{r model}
+gam_velxGDxedge1 <- as.formula(
+  "SHIFT_abs ~ vel_abs_s + GD_s + Param +
+   vel_abs_s:GD_s + vel_abs_s:Param + GD_s:Param +
+   vel_abs_s:GD_s:Param +
+   LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality +
+   (1|Class)")
+
+full <- glmmTMB(gam_velxGDxedge1,
+                family = Gamma(link = 'log'),
+                weights = mydatatogo2$weight_obs_spp,
+                REML = FALSE,
+                data = mydatatogo2)
+
+        
+```
+### No significant effects:
+```{r summaryfull}
+summary(full) 
+```
+
+### Model fit is singular, and random effect variance is approximately 0:
+```{r checksing}
+check_singularity(full)
+```
+
+
+### Because of this, R2m = R2c (no proportion of variance is attributed to the random effect of class)
+```{r r2}
+MuMIn::r.squaredGLMM(full)
+```
+
+
+## Bootstrapping
+We fit 1000 iterations as an example (resulting R object can be loaded directly in next chunk).
+
+```{r bootstrap, eval=FALSE}
+####Fit a single model with Param*GD*climate velocity####
+
+#Obs are weighted to correct for imbalance in obs position (TE,CE,LE) and species frequency
+#A GLMM model are fitted to control for method heterogeneity that assessed species range shifts and phylogeny proximity
+#The model are bootstrapped to compute ccurate mean, CI95% and significance of effect size.
+gam_velxGDxedge1 <- as.formula(
+    "SHIFT_abs ~ scale(vel_abs) * scale(GD) * Param + 
+    LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
+    (1|Class)")
+s1=69 #the initial random seed
+nB=1000 #the number of bootstraps
+#nCPU=10
+
+#setting a local cluster
+#my.cluster2 <- parallel::makeCluster(
+#    nCPU, 
+#    type = "PSOCK"
+#)
+#clusterExport(cl = my.cluster2, varlist = c("s1","nB","glmmTMB","mydatatogo","gam_velxGDxedge1","ranef","check_singularity"))
+#
+##register cluster
+#doParallel::registerDoParallel(cl = my.cluster2)
+
+ex=lapply(1:nB, function(i) {
+    
+    gc(reset=T)
+    #print(i)
+    set.seed(s1+i)
+    
+    n1=sample(1:nrow(mydatatogo),rep=T,size=nrow(mydatatogo))
+    mydatatogo2=mydatatogo[n1,]
+    mydatatogoCE=subset(mydatatogo2,Param=="O")
+    x1=data.frame(table(mydatatogoCE$spp))
+    x1=subset(x1,Freq>0)
+    x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+    mydatatogoCE=merge(mydatatogoCE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+    
+    mydatatogoLE=subset(mydatatogo2,Param=="LE")
+    x1=data.frame(table(mydatatogoLE$spp))
+    x1=subset(x1,Freq>0)
+    x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+    mydatatogoLE=merge(mydatatogoLE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+    
+    mydatatogoTE=subset(mydatatogo2,Param=="TE")
+    x1=data.frame(table(mydatatogoTE$spp))
+    x1=subset(x1,Freq>0)
+    x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+    mydatatogoTE=merge(mydatatogoTE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+    
+    mydatatogoTE$weight_obs_spp=mydatatogoTE$weight_obs_spp*(1/3)
+    mydatatogoCE$weight_obs_spp=mydatatogoCE$weight_obs_spp*(1/3)
+    mydatatogoLE$weight_obs_spp=mydatatogoLE$weight_obs_spp*(1/3)
+    
+    mydatatogo2=rbind(mydatatogoTE,mydatatogoCE,mydatatogoLE)
+    
+    gamX1 <- glmmTMB(gam_velxGDxedge1, 
+                     family = Gamma(link = "log"),
+                     weights = weight_obs_spp,
+                     REML=F,
+                     data = mydatatogo2)
+    round(MuMIn::r.squaredGLMM(gamX1),2)
+    r2=round(MuMIn::r.squaredGLMM(gamX1),2)
+    r2=data.frame(r2m=r2[2,1],
+                  r2c=r2[2,2],
+                  moy_GD=mean(mydatatogo2$GD), 
+                  sd_GD=sd(mydatatogo2$GD),
+                  moy_VC=mean(mydatatogo2$vel_abs), 
+                  sd_VC=sd(mydatatogo2$vel_abs),
+                  singu=check_singularity(gamX1)[[1]],
+                  nB=i)
+    
+    coeff=data.frame(summary(gamX1)$coeff$cond,
+                     var=row.names(summary(gamX1)$coeff$cond),
+                     nB=i)
+    
+    randEff=as.data.frame(ranef(gamX1,condVar=T))
+    randEff$nB=i
+    
+    return(list(r2,coeff,randEff))
+    
+})
+
+#parallel::stopCluster(cl = my.cluster2)
+
+```
+
+
+## Summary of bootstrap results
+```{r summbootstrap}
+ex = readRDS('1k_boot.rds')
+
+nom="allW"
+randEff=rlist::list.rbind(lapply(ex,"[[",3))
+coeff=rlist::list.rbind(lapply(ex,"[[",2))
+r2=rlist::list.rbind(lapply(ex,"[[",1))
+
+   
+dir.create('model_out')
+dir.out = 'model_out/'
+write.table(r2,
+            paste0(dir.out, "R2_",nom,".csv"),
+            sep=";",dec=".",row=F)
+write.table(coeff,
+            paste0(dir.out, "coeff_",nom,".csv"),
+            sep=";",dec=".",row=F)
+write.table(randEff,
+            paste0(dir.out, "randEff_",nom,".csv"),
+            sep=";",dec=".",row=F)
+```
+
+## Singular fit
+Model fit is singular, and R2m = R2c for all bootstrap iterations:
+```{r sing}
+head(r2)
+
+## All iterations have singular fit --------
+summary(r2$singu) 
+
+## R2m = R2c for all iterations --------
+all.equal(r2$r2m, r2$r2c) 
+
+```
+
+
+## Analysis of bootstrap output
+Summary of model output (res_ok), write results files:  
+- summary of R2 for iterations: R2_allW_sel1000.csv  
+- summary of R2 overall: summary_R2.csv  
+- summary of model coefficients after bootstrapping: summary_coeff.csv  
+
+```{r bootstrapanalysis}
+#analysis of raw bootstrap output
+test1=function(x,mu=0){
+    return(1-(length(x[x>mu])/length(x)))
+}
+
+#bootstrap test: H0= coefficient equal to 0; H1= coefficient lower than 0
+test2=function(x,mu=0){
+    return(1-(length(x[x<mu])/length(x)))
+}
+
+
+mod='allW'
+a=1
+s1=10 #the seed to make reproducible random stuff
+nB=1000
+setwd(dir.out)
+
+for(i in 1:length(mod)){
+    print(a)
+    r2=read.csv2(paste0("R2_",mod[i],".csv"),sep=";",dec=".")
+    #r2$nB=1:nrow(r2)
+    r2a=subset(r2,is.na(r2m)==F)
+    print(paste(mod[i],': ',nrow(r2a),sep=""))
+    if(nrow(r2a)>=nB){ #random selection of nB bootstrap model (criteria: model convergence)
+        set.seed(s1)
+        r2a=r2a[sample(1:nrow(r2a),size=nB,replace=F),]
+    }
+    if(nrow(r2a)<nB){
+        print(paste0("sampling size is less than ",nB," bootstraps"))
+    }else{
+        resR2=data.frame(type="r2m",moy=mean(r2a$r2m),sd=sd(r2a$r2m),median=median(r2a$r2m),q025=quantile(r2a$r2m,probs=0.025),q975=quantile(r2a$r2m,probs=0.975))
+        resR2=rbind(resR2,data.frame(type="r2c",moy=mean(r2a$r2c),sd=sd(r2a$r2c),median=median(r2a$r2c),q025=quantile(r2a$r2c,probs=0.025),q975=quantile(r2a$r2c,probs=0.975)))
+        #resR2$n_sing=nrow(subset(r2a,sing==T))
+        resR2$model=mod[i]
+        
+        c1=read.csv2(paste("coeff_",mod[i],".csv",sep=""),sep=";",dec=".",h=T)
+        #c1$nB=rep(1:nrow(r2),each=nrow(c1)/6000)
+        c1=merge(c1,data.frame(nB=r2a$nB),by.x="nB",by.y="nB")
+        rr3=c1
+        
+        res=data.frame(var=names(tapply(rr3$Estimate,rr3$var,mean)),moy=tapply(rr3$Estimate,rr3$var,mean),sd=tapply(rr3$Estimate,rr3$var,sd),median=tapply(rr3$Estimate,rr3$var,median),q025=tapply(rr3$Estimate,rr3$var,quantile,probs=0.025),
+                       p975=tapply(rr3$Estimate,rr3$var,quantile,probs=0.975), pv.inf0=tapply(rr3$Estimate,rr3$var,test2,mu=0),pv.sup0=tapply(rr3$Estimate,rr3$var,test1,mu=0))
+        res$model=mod[i]
+        if(a==1){
+            resR2_ok=resR2
+            res_ok=res
+        }
+        else{
+            resR2_ok=rbind(resR2_ok,resR2)
+            res_ok=rbind(res_ok,res)
+        }
+        
+        a=a+1
+    }
+}
+
+write.table(r2a,
+            paste0("R2_",nom,"_sel1000.csv"),
+            sep=";",dec=".",row=F) #999 selected bootstrapped models
+
+write.table(resR2_ok,
+            paste0("summary_R2.csv"),
+            sep=";",dec=".",row=F) 
+
+#R2 statistic computed from 5000 boostrap model:
+#type= R2 type (r2m= marginal R2; r2c= conditional R2)
+#moy= mean R2 value
+#sd= R2 standard deviation value
+#median= median R2 value
+#q025= 2.5% quantile of the bootstrap distribution
+#q975= 97.5% quantile of the bootstrap distribution
+#n_sing= number of singular model
+#model= model name abbreviation
+
+write.table(res_ok,
+            ("summary_coeff.csv"),
+            sep=";",dec=".",row=F) 
+#coefficient statistics
+#Var =  Term of the model
+#moy = mean effect computed from the 5000 bootstrap model
+#sd = standard deviation computed from the 5000 bootstrap model
+#med = median effect computed from the 5000 bootstrap model
+#q025 = 2.5% quantile of the bootstrap coefficient distribution
+#q975 = 97.5% quantile of the bootstrap coefficient distribution
+#pv.sup0 = p-value of the bootstrap test testing the significance of the effect (H0= coefficient equal to 0; H1= coefficient greater than 0)
+#pv.inf0 = p-value of the bootstrap test testing the significance of the effect (H0= coefficient equal to 0; H1= coefficient lower than 0)
+#model= model name abbreviation
+
+```
+
+## Bootstrap summary
+There is no statistical support for the 3-way interaction between genetic diversity, climate velocity, and range position.
+```{r modres}
+
+# Summary of R2:
+resR2_ok
+
+# Model coefficients:
+rownames(res_ok)=NULL
+res_ok
+```
+
+
+## Adjusted model
+
+We fit the same model nesting a species random effect within class, removing weights and without bootstrapping:
+
+```{r altmodel}
+
+gam_velxGDxedge1.alt <- as.formula(
+    "SHIFT_abs ~ scale(vel_abs) * scale(GD) * Param + 
+    LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
+    (1|Class/spp)")
+
+alt.gam <- glmmTMB(gam_velxGDxedge1.alt, 
+                     family = Gamma(link = "log"),
+                     #weights = weight_obs_spp,
+                     REML=F,
+                     data = mydatatogo2)
+
+```
+
+
+There is no support for an effect of genetic diversity when accounting for class and species:
+```{r altsummary}
+
+summary(alt.gam)
+```
+
+
+
+This lack of effect holds when fitting the original model with a class random effect  without weights or bootstrapping, particularly for the three-way interaction effect:
+```{r model_class}
+gamX1.cl <- glmmTMB(SHIFT_abs ~ scale(vel_abs) * scale(GD) * Param + 
+                      LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
+                      (1|Class), 
+                   family = Gamma(link = "log"),
+                   #weights = weight_obs_spp,
+                   REML=F,
+                   data = mydatatogo2)
+
+summary(gamX1.cl)
+```
+
