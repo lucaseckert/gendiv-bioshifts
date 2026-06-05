@@ -1,5 +1,7 @@
 ## additions
 .DS_Store
+data/bootstrap_fixed_raw.rds
+scripts/stats-issues.docx
 
 # History files
 .Rhistory

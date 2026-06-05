@@ -12,11 +12,11 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r libraries, echo=FALSE, message=FALSE, warning=FALSE}
 #required packages
 list.of.packages <- c(
-  #"doParallel", "parallel","foreach",
+  #"doParallel","foreach",
   #"pbapply",
-  "dplyr", "tidyr", #"data.table",
+  "parallel", "dplyr", "tidyr", #"data.table",
   #"scales","effects","psych", 
-  "glmmTMB", "lme4", "lmerTest",#"here","rlist","partR2",
+  "glmmTMB", "lme4", "lmerTest","here",#"rlist","partR2",
   #"ggtext","gridExtra","grid","lattice","viridis",
   "performance","MuMIn")#,"glmm.hp") 
 #
@@ -45,7 +45,7 @@ sapply(list.of.packages, require, character.only = TRUE)
 
 ```{r dataselection, message = FALSE, warning=FALSE}
 # load data
-mydataset <- read.csv('data/gen_data_final_fonseca.csv')
+mydataset <- read.csv(here("data", "gen_data_final_fonseca.csv"))
 
 #Data selection
 ## Latitude data
@@ -157,9 +157,7 @@ taxatable <- mydatatogo %>%
 
 ```
 
-
 ## Model weights
-
 ```{r weights}
 #### Variance partitioning #####
 
@@ -198,7 +196,6 @@ sum(mydatatogo2$weight_obs_spp)
 ```
 
 ## Fit model:
-
 ```{r model}
 gam_velxGDxedge1 <- as.formula(
   "SHIFT_abs ~ vel_abs_s + GD_s + Param +
@@ -215,26 +212,24 @@ full <- glmmTMB(gam_velxGDxedge1,
 
         
 ```
-### No significant effects:
+
+No significant effect, inflated SEs
 ```{r summaryfull}
 summary(full) 
 ```
 
-### Model fit is singular, and random effect variance is approximately 0:
+Model fit is singular, and random effect variance is approximately 0:
 ```{r checksing}
 check_singularity(full)
 ```
 
-
-### Because of this, R2m = R2c (no proportion of variance is attributed to the random effect of class)
+Because of this, R2m = R2c (no proportion of variance is attributed to the random effect of class)
 ```{r r2}
 MuMIn::r.squaredGLMM(full)
 ```
 
-
 ## Bootstrapping
 We fit 1000 iterations as an example (resulting R object can be loaded directly in next chunk).
-
 ```{r bootstrap, eval=FALSE}
 ####Fit a single model with Param*GD*climate velocity####
 
@@ -325,25 +320,24 @@ ex=lapply(1:nB, function(i) {
 
 ## Summary of bootstrap results
 ```{r summbootstrap}
-ex = readRDS('data/1k_boot.rds')
+ex = readRDS(here('data', '1k_boot.rds'))
 
 nom="allW"
 randEff=rlist::list.rbind(lapply(ex,"[[",3))
 coeff=rlist::list.rbind(lapply(ex,"[[",2))
 r2=rlist::list.rbind(lapply(ex,"[[",1))
 
-   
-dir.create('model_out')
-dir.out = 'model_out/'
-write.table(r2,
-            paste0(dir.out, "R2_",nom,".csv"),
-            sep=";",dec=".",row=F)
-write.table(coeff,
-            paste0(dir.out, "coeff_",nom,".csv"),
-            sep=";",dec=".",row=F)
-write.table(randEff,
-            paste0(dir.out, "randEff_",nom,".csv"),
-            sep=";",dec=".",row=F)
+# dir.create('model_out')
+# dir.out = 'model_out/'
+# write.table(r2,
+#             paste0(dir.out, "R2_",nom,".csv"),
+#             sep=";",dec=".",row=F)
+# write.table(coeff,
+#             paste0(dir.out, "coeff_",nom,".csv"),
+#             sep=";",dec=".",row=F)
+# write.table(randEff,
+#             paste0(dir.out, "randEff_",nom,".csv"),
+#             sep=";",dec=".",row=F)
 ```
 
 ## Singular fit
@@ -361,11 +355,6 @@ all.equal(r2$r2m, r2$r2c)
 
 
 ## Analysis of bootstrap output
-Summary of model output (res_ok), write results files:  
-- summary of R2 for iterations: R2_allW_sel1000.csv  
-- summary of R2 overall: summary_R2.csv  
-- summary of model coefficients after bootstrapping: summary_coeff.csv  
-
 ```{r bootstrapanalysis}
 #analysis of raw bootstrap output
 test1=function(x,mu=0){
@@ -382,11 +371,11 @@ mod='allW'
 a=1
 s1=10 #the seed to make reproducible random stuff
 nB=1000
-setwd(dir.out)
+#setwd(dir.out)
 
 for(i in 1:length(mod)){
     print(a)
-    r2=read.csv2(paste0("R2_",mod[i],".csv"),sep=";",dec=".")
+    r2=rlist::list.rbind(lapply(ex,"[[",1))
     #r2$nB=1:nrow(r2)
     r2a=subset(r2,is.na(r2m)==F)
     print(paste(mod[i],': ',nrow(r2a),sep=""))
@@ -402,7 +391,8 @@ for(i in 1:length(mod)){
         #resR2$n_sing=nrow(subset(r2a,sing==T))
         resR2$model=mod[i]
         
-        c1=read.csv2(paste("coeff_",mod[i],".csv",sep=""),sep=";",dec=".",h=T)
+        c1 <- do.call(rbind, lapply(ex, `[[`, 2))
+        #c1=read.csv2(paste("coeff_",mod[i],".csv",sep=""),sep=";",dec=".",h=T)
         #c1$nB=rep(1:nrow(r2),each=nrow(c1)/6000)
         c1=merge(c1,data.frame(nB=r2a$nB),by.x="nB",by.y="nB")
         rr3=c1
@@ -423,13 +413,13 @@ for(i in 1:length(mod)){
     }
 }
 
-write.table(r2a,
-            paste0("R2_",nom,"_sel1000.csv"),
-            sep=";",dec=".",row=F) #999 selected bootstrapped models
-
-write.table(resR2_ok,
-            paste0("summary_R2.csv"),
-            sep=";",dec=".",row=F) 
+# write.table(r2a,
+#             paste0("R2_",nom,"_sel1000.csv"),
+#             sep=";",dec=".",row=F) #999 selected bootstrapped models
+# 
+# write.table(resR2_ok,
+#             paste0("summary_R2.csv"),
+#             sep=";",dec=".",row=F) 
 
 #R2 statistic computed from 5000 boostrap model:
 #type= R2 type (r2m= marginal R2; r2c= conditional R2)
@@ -441,9 +431,9 @@ write.table(resR2_ok,
 #n_sing= number of singular model
 #model= model name abbreviation
 
-write.table(res_ok,
-            ("summary_coeff.csv"),
-            sep=";",dec=".",row=F) 
+# write.table(res_ok,
+#             ("summary_coeff.csv"),
+#             sep=";",dec=".",row=F) 
 #coefficient statistics
 #Var =  Term of the model
 #moy = mean effect computed from the 5000 bootstrap model
@@ -469,11 +459,24 @@ rownames(res_ok)=NULL
 res_ok
 ```
 
+## Reweighting
+If we re scale the weights to N rather than 1, the fit is no longer singular. Still, these weights are inappropriate.
+```{r reweight}
+mydatatogo2$weight_obs_spp_2<-mydatatogo2$weight_obs_spp*nrow(mydatatogo2)
+
+reweighted <- glmmTMB(gam_velxGDxedge1,
+                family = Gamma(link = 'log'),
+                weights = mydatatogo2$weight_obs_spp_2,
+                REML = FALSE,
+                data = mydatatogo2)
+
+summary(reweighted) 
+check_singularity(reweighted)
+MuMIn::r.squaredGLMM(reweighted)
+```
 
 ## Adjusted model
-
-We fit the same model nesting a species random effect within class, removing weights and without bootstrapping:
-
+We fit the same model nesting a species random effect within class and removing weights:
 ```{r altmodel}
 
 gam_velxGDxedge1.alt <- as.formula(
@@ -489,25 +492,296 @@ alt.gam <- glmmTMB(gam_velxGDxedge1.alt,
 
 ```
 
-
-There is no support for an effect of genetic diversity when accounting for class and species:
+The model is not singular with both random effects contributing. With lmerTest, there are no significant effects, but we explore more robust methods below.
 ```{r altsummary}
-
 summary(alt.gam)
+check_singularity(alt.gam)
+MuMIn::r.squaredGLMM(alt.gam)
 ```
 
+## Parametric LRT bootstrap
+We use a parametric LRT bootstrap to assess the statistical support for the effects of genetic diversity on our alternative model. First, we test if there is support for the central three-way interaction:
+```{r lrtbootstrap3way, eval=FALSE}
 
+# full model
+full_model<-alt.gam
 
-This lack of effect holds when fitting the original model with a class random effect  without weights or bootstrapping, particularly for the three-way interaction effect:
-```{r model_class}
-gamX1.cl <- glmmTMB(SHIFT_abs ~ scale(vel_abs) * scale(GD) * Param + 
-                      LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
-                      (1|Class), 
-                   family = Gamma(link = "log"),
-                   #weights = weight_obs_spp,
-                   REML=F,
-                   data = mydatatogo2)
+# null without three way interaction
+null_3way <- glmmTMB(
+  SHIFT_abs ~ (scale(vel_abs) + scale(GD) + Param)^2 + 
+    LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
+    (1|Class/spp),
+  family = Gamma(link = "log"),
+  REML = FALSE,
+  data = mydatatogo2
+)
 
-summary(gamX1.cl)
+# observed LR
+obsLR_3way <- as.numeric(
+  2 * (logLik(full_model) - logLik(null_3way))
+)
+
+# cluster setup
+nCPU <- 10
+s1 <- 69
+my.cluster3 <- parallel::makeCluster(nCPU, type = "PSOCK")
+clusterExport(cl = my.cluster3, 
+              varlist = c("s1", "glmmTMB", "mydatatogo2", 
+                         "full_model", "null_3way"))
+clusterEvalQ(cl = my.cluster3, library(glmmTMB))
+doParallel::registerDoParallel(cl = my.cluster3)
+
+# LRT bootstrap in parallel
+simLR_3way <- pbapply::pblapply(seq_len(1000), function(i) {
+  set.seed(s1 + i)
+  ysim <- simulate(null_3way)[[1]]
+  dat <- mydatatogo2
+  dat$SHIFT_abs <- ysim
+  tryCatch({
+    m0_boot <- update(null_3way, data = dat)
+    m1_boot <- update(full_model, data = dat)
+    as.numeric(2 * (logLik(m1_boot) - logLik(m0_boot)))
+  }, error = function(e) NA_real_)
+}, cl = my.cluster3)
+
+parallel::stopCluster(my.cluster3)
+
+simLR_3way <- unlist(simLR_3way)
+
+# p-value
+p_3way <- mean(simLR_3way >= obsLR_3way, na.rm = TRUE)
+
+saveRDS(
+  list(obsLR_3way = obsLR_3way, simLR_3way = simLR_3way, p_3way = p_3way), 
+  here("data", "lrt_bootstrap_3way.rds")
+)
 ```
 
+### There is no evidence that including the 3 way interaction improves model fit
+```{r lrtbootstrap3wayresults}
+lrt_results_3way <- readRDS(here("data", "lrt_bootstrap_3way.rds"))
+obsLR_3way <- lrt_results_3way$obsLR_3way
+simLR_3way <- lrt_results_3way$simLR_3way
+p_3way <- lrt_results_3way$p_3way
+cat("Bootstrap LRT p-value:", p_3way)
+```
+
+Next we test if there is support for any effect of genetic diversity:
+```{r lrtbootstrapGD, eval=FALSE}
+## all GD effects removed
+null_GD <- glmmTMB(
+  SHIFT_abs ~ scale(vel_abs) * Param + 
+    LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
+    (1|Class/spp),
+  family = Gamma(link = "log"),
+  REML = FALSE,
+  data = mydatatogo2
+)
+
+# observed LR
+obsLR_GD <- as.numeric(
+  2 * (logLik(full_model) - logLik(null_GD))
+)
+
+# cluster setup
+nCPU <- 10
+s1 <- 69
+my.cluster4 <- parallel::makeCluster(nCPU, type = "PSOCK")
+clusterExport(cl = my.cluster4, 
+              varlist = c("s1", "glmmTMB", "mydatatogo2", 
+                         "full_model", "null_GD"))
+clusterEvalQ(cl = my.cluster4, library(glmmTMB))
+doParallel::registerDoParallel(cl = my.cluster4)
+
+# LRT bootstrap in parallel
+simLR_GD <- pbapply::pblapply(seq_len(1000), function(i) {
+  set.seed(s1 + i)
+  ysim <- simulate(null_GD)[[1]]
+  dat <- mydatatogo2
+  dat$SHIFT_abs <- ysim
+  tryCatch({
+    m0_boot <- update(null_GD, data = dat)
+    m1_boot <- update(full_model, data = dat)
+    as.numeric(2 * (logLik(m1_boot) - logLik(m0_boot)))
+  }, error = function(e) NA_real_)
+}, cl = my.cluster4)
+
+parallel::stopCluster(my.cluster4)
+
+simLR_GD <- unlist(simLR_GD)
+
+# p-value
+p_GD <- mean(simLR_GD >= obsLR_GD, na.rm = TRUE)
+
+saveRDS(
+  list(obsLR_GD = obsLR_GD, simLR_GD = simLR_GD, p_GD = p_GD), 
+  here("data", "lrt_bootstrap_GD.rds")
+)
+```
+
+### There is no evidence that including any effect of genetic diversity improves model fit
+```{r lrtbootstrapGDresults}
+lrt_results_GD <- readRDS(here("data", "lrt_bootstrap_GD.rds"))
+obsLR_GD <- lrt_results_GD$obsLR_GD
+simLR_GD <- lrt_results_GD$simLR_GD
+p_GD <- lrt_results_GD$p_GD
+cat("Bootstrap LRT p-value:", p_GD)
+```
+
+## Corrected bootstrap
+We also evaluated support for effects of genetic diversity using our model and their bootstrap method, but corrected to appropriately sample species and then observations within species
+```{r fixedbootstrap, eval=FALSE}
+# cluster setup
+nCPU <- 10
+s1 <- 69
+nB <- 1000
+my.cluster5 <- parallel::makeCluster(nCPU, type = "PSOCK")
+clusterExport(cl = my.cluster5, 
+              varlist = c("s1", "nB", "glmmTMB", "mydatatogo", 
+                         "gam_velxGDxedge1.alt", "check_singularity", "ranef"))
+clusterEvalQ(cl = my.cluster5, {
+  library(glmmTMB)
+  library(MuMIn)
+})
+doParallel::registerDoParallel(cl = my.cluster5)
+
+# fixed bootstrap our model
+ex=pbapply::pblapply(1:nB, function(i) {
+    
+    gc(reset=T)
+    #print(i)
+    set.seed(s1+i)
+    
+    ## hierarchical bootstrap
+    spp_boot <- sample(unique(mydatatogo$spp),
+                   size = length(unique(mydatatogo$spp)),
+                   replace = TRUE)
+
+    boot_list <- vector("list", length(spp_boot))
+    for(j in seq_along(spp_boot)){
+        tmp <- subset(mydatatogo,
+                  spp == spp_boot[j])
+       tmp <- tmp[sample(1:nrow(tmp),
+                      size = nrow(tmp),
+                      replace = TRUE), ]
+        tmp$spp <- paste0(tmp$spp[1], "_boot", j)
+
+      boot_list[[j]] <- tmp
+    }
+
+    mydatatogo2 <- do.call(rbind, boot_list)
+    
+    # mydatatogoCE=subset(mydatatogo2,Param=="O")
+    # x1=data.frame(table(mydatatogoCE$spp))
+    # x1=subset(x1,Freq>0)
+    # x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+    # mydatatogoCE=merge(mydatatogoCE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+    # 
+    # mydatatogoLE=subset(mydatatogo2,Param=="LE")
+    # x1=data.frame(table(mydatatogoLE$spp))
+    # x1=subset(x1,Freq>0)
+    # x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+    # mydatatogoLE=merge(mydatatogoLE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+    # 
+    # mydatatogoTE=subset(mydatatogo2,Param=="TE")
+    # x1=data.frame(table(mydatatogoTE$spp))
+    # x1=subset(x1,Freq>0)
+    # x1$weight_obs_spp=(1/x1$Freq)*(1/nrow(x1))
+    # mydatatogoTE=merge(mydatatogoTE,x1[,c(1,3)],by.x="spp",by.y="Var1")
+    # 
+    # mydatatogoTE$weight_obs_spp=mydatatogoTE$weight_obs_spp*(1/3)
+    # mydatatogoCE$weight_obs_spp=mydatatogoCE$weight_obs_spp*(1/3)
+    # mydatatogoLE$weight_obs_spp=mydatatogoLE$weight_obs_spp*(1/3)
+    # 
+    # mydatatogo2=rbind(mydatatogoTE,mydatatogoCE,mydatatogoLE)
+    
+    gamX1 <- glmmTMB(gam_velxGDxedge1.alt, 
+                     family = Gamma(link = "log"),
+                     #weights = weight_obs_spp,
+                     REML=F,
+                     data = mydatatogo2)
+    round(MuMIn::r.squaredGLMM(gamX1),2)
+    r2=round(MuMIn::r.squaredGLMM(gamX1),2)
+    r2=data.frame(r2m=r2[2,1],
+                  r2c=r2[2,2],
+                  moy_GD=mean(mydatatogo2$GD), 
+                  sd_GD=sd(mydatatogo2$GD),
+                  moy_VC=mean(mydatatogo2$vel_abs), 
+                  sd_VC=sd(mydatatogo2$vel_abs),
+                  singu=check_singularity(gamX1)[[1]],
+                  nB=i)
+    
+    coeff=data.frame(summary(gamX1)$coeff$cond,
+                     var=row.names(summary(gamX1)$coeff$cond),
+                     nB=i)
+    
+    randEff=as.data.frame(ranef(gamX1,condVar=T))
+    randEff$nB=i
+    
+    return(list(r2,coeff,randEff))
+    
+}, cl = my.cluster5)
+parallel::stopCluster(cl = my.cluster5)
+
+saveRDS(ex, here("data", "bootstrap_fixed_raw.rds"))
+
+mod<-"altBoot"
+a=1
+for(i in 1:length(mod)){
+    print(a)
+    r2 <- do.call(rbind, lapply(ex, `[[`, 1))
+    c1 <- do.call(rbind, lapply(ex, `[[`, 2))
+    r2a <- subset(r2, !is.na(r2m))
+  
+    #r2=read.csv2(paste0("R2_",mod[i],".csv"),sep=";",dec=".")
+    #r2$nB=1:nrow(r2)
+    #r2a=subset(r2,is.na(r2m)==F)
+    print(paste(mod[i],': ',nrow(r2a),sep=""))
+    if(nrow(r2a)>=nB){ #random selection of nB bootstrap model (criteria: model convergence)
+        set.seed(s1)
+        r2a=r2a[sample(1:nrow(r2a),size=nB,replace=F),]
+    }
+    if(nrow(r2a)<nB){
+        print(paste0("sampling size is less than ",nB," bootstraps"))
+    }else{
+        resR2=data.frame(type="r2m",moy=mean(r2a$r2m),sd=sd(r2a$r2m),median=median(r2a$r2m),q025=quantile(r2a$r2m,probs=0.025),q975=quantile(r2a$r2m,probs=0.975))
+        resR2=rbind(resR2,data.frame(type="r2c",moy=mean(r2a$r2c),sd=sd(r2a$r2c),median=median(r2a$r2c),q025=quantile(r2a$r2c,probs=0.025),q975=quantile(r2a$r2c,probs=0.975)))
+        #resR2$n_sing=nrow(subset(r2a,sing==T))
+        resR2$model=mod[i]
+        
+        #c1=read.csv2(paste("coeff_",mod[i],".csv",sep=""),sep=";",dec=".",h=T)
+        #c1$nB=rep(1:nrow(r2),each=nrow(c1)/6000)
+        c1=merge(c1,data.frame(nB=r2a$nB),by.x="nB",by.y="nB")
+        rr3=c1
+        
+        res=data.frame(var=names(tapply(rr3$Estimate,rr3$var,mean)),moy=tapply(rr3$Estimate,rr3$var,mean),sd=tapply(rr3$Estimate,rr3$var,sd),median=tapply(rr3$Estimate,rr3$var,median),q025=tapply(rr3$Estimate,rr3$var,quantile,probs=0.025),
+                       p975=tapply(rr3$Estimate,rr3$var,quantile,probs=0.975), pv.inf0=tapply(rr3$Estimate,rr3$var,test2,mu=0),pv.sup0=tapply(rr3$Estimate,rr3$var,test1,mu=0))
+        res$model=mod[i]
+        if(a==1){
+            resR2_ok=resR2
+            res_ok=res
+        }
+        else{
+            resR2_ok=rbind(resR2_ok,resR2)
+            res_ok=rbind(res_ok,res)
+        }
+        
+        a=a+1
+    }
+}
+
+saveRDS(list(resR2_ok = resR2_ok, res_ok = res_ok), here("data", "bootstrap_fixed.rds"))
+```
+
+### No support of any GD effects using our model and a proper bootstrap
+```{r fixed bootstrapresults}
+bootstrap_fixed <- readRDS(here("data", "bootstrap_fixed.rds"))
+resR2_ok <- bootstrap_fixed$resR2_ok
+res_ok <- bootstrap_fixed$res_ok
+
+# summary of r2
+resR2_ok
+
+# summary of coefficients
+res_ok
+```
