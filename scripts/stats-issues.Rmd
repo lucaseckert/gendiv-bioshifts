@@ -475,6 +475,31 @@ check_singularity(reweighted)
 MuMIn::r.squaredGLMM(reweighted)
 ```
 
+## Weighting simulation
+The effects of summing the weights to 1 can also be seen in a simple simulation
+```{r reweight}
+group <- rep(1:5, each=20)
+x     <- rnorm(100)
+y     <- rgamma(100, 2, 2/exp(1 + 0.5*x + rep(rnorm(5,0,0.6), each=20)))
+dat   <- data.frame(y=y, x=x, g=factor(group))
+
+
+# weights sum to 1... each weight approx 1/N, collapses likelihood 
+m1 <- glmmTMB(y~x+(1|g), data=dat, family=Gamma(link="log"), weights=rep(1/100,100), REML=FALSE)
+
+# weights sum to N... absolute scale, RE variance correctly estimated
+m2 <- glmmTMB(y~x+(1|g), data=dat, family=Gamma(link="log"), weights=rep(1,100), REML=FALSE)
+
+# no weights matches m2
+m3 <- glmmTMB(y~x+(1|g), data=dat, family=Gamma(link="log"), REML=FALSE)
+
+
+summary(m1)  # broken
+summary(m2)  # fine
+summary(m3)  # fine
+```
+
+
 ## Adjusted model
 We fit the same model nesting a species random effect within class and removing weights:
 ```{r altmodel}
@@ -500,132 +525,12 @@ MuMIn::r.squaredGLMM(alt.gam)
 ```
 
 ## Parametric LRT bootstrap
-We use a parametric LRT bootstrap to assess the statistical support for the effects of genetic diversity on our alternative model. First, we test if there is support for the central three-way interaction:
-```{r lrtbootstrap3way, eval=FALSE}
-
-# full model
-full_model<-alt.gam
-
-# null without three way interaction
-null_3way <- glmmTMB(
-  SHIFT_abs ~ (scale(vel_abs) + scale(GD) + Param)^2 + 
-    LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
-    (1|Class/spp),
-  family = Gamma(link = "log"),
-  REML = FALSE,
-  data = mydatatogo2
-)
-
-# observed LR
-obsLR_3way <- as.numeric(
-  2 * (logLik(full_model) - logLik(null_3way))
-)
-
-# cluster setup
-nCPU <- 10
-s1 <- 69
-my.cluster3 <- parallel::makeCluster(nCPU, type = "PSOCK")
-clusterExport(cl = my.cluster3, 
-              varlist = c("s1", "glmmTMB", "mydatatogo2", 
-                         "full_model", "null_3way"))
-clusterEvalQ(cl = my.cluster3, library(glmmTMB))
-doParallel::registerDoParallel(cl = my.cluster3)
-
-# LRT bootstrap in parallel
-simLR_3way <- pbapply::pblapply(seq_len(1000), function(i) {
-  set.seed(s1 + i)
-  ysim <- simulate(null_3way)[[1]]
-  dat <- mydatatogo2
-  dat$SHIFT_abs <- ysim
-  tryCatch({
-    m0_boot <- update(null_3way, data = dat)
-    m1_boot <- update(full_model, data = dat)
-    as.numeric(2 * (logLik(m1_boot) - logLik(m0_boot)))
-  }, error = function(e) NA_real_)
-}, cl = my.cluster3)
-
-parallel::stopCluster(my.cluster3)
-
-simLR_3way <- unlist(simLR_3way)
-
-# p-value
-p_3way <- mean(simLR_3way >= obsLR_3way, na.rm = TRUE)
-
-saveRDS(
-  list(obsLR_3way = obsLR_3way, simLR_3way = simLR_3way, p_3way = p_3way), 
-  here("data", "lrt_bootstrap_3way.rds")
-)
-```
-
-### There is no evidence that including the 3 way interaction improves model fit
-```{r lrtbootstrap3wayresults}
-lrt_results_3way <- readRDS(here("data", "lrt_bootstrap_3way.rds"))
-obsLR_3way <- lrt_results_3way$obsLR_3way
-simLR_3way <- lrt_results_3way$simLR_3way
-p_3way <- lrt_results_3way$p_3way
-cat("Bootstrap LRT p-value:", p_3way)
-```
-
-Next we test if there is support for any effect of genetic diversity:
-```{r lrtbootstrapGD, eval=FALSE}
-## all GD effects removed
-null_GD <- glmmTMB(
-  SHIFT_abs ~ scale(vel_abs) * Param + 
-    LogNtempUnits + LogExtent + ContinuousGrain + PrAb + Quality + 
-    (1|Class/spp),
-  family = Gamma(link = "log"),
-  REML = FALSE,
-  data = mydatatogo2
-)
-
-# observed LR
-obsLR_GD <- as.numeric(
-  2 * (logLik(full_model) - logLik(null_GD))
-)
-
-# cluster setup
-nCPU <- 10
-s1 <- 69
-my.cluster4 <- parallel::makeCluster(nCPU, type = "PSOCK")
-clusterExport(cl = my.cluster4, 
-              varlist = c("s1", "glmmTMB", "mydatatogo2", 
-                         "full_model", "null_GD"))
-clusterEvalQ(cl = my.cluster4, library(glmmTMB))
-doParallel::registerDoParallel(cl = my.cluster4)
-
-# LRT bootstrap in parallel
-simLR_GD <- pbapply::pblapply(seq_len(1000), function(i) {
-  set.seed(s1 + i)
-  ysim <- simulate(null_GD)[[1]]
-  dat <- mydatatogo2
-  dat$SHIFT_abs <- ysim
-  tryCatch({
-    m0_boot <- update(null_GD, data = dat)
-    m1_boot <- update(full_model, data = dat)
-    as.numeric(2 * (logLik(m1_boot) - logLik(m0_boot)))
-  }, error = function(e) NA_real_)
-}, cl = my.cluster4)
-
-parallel::stopCluster(my.cluster4)
-
-simLR_GD <- unlist(simLR_GD)
-
-# p-value
-p_GD <- mean(simLR_GD >= obsLR_GD, na.rm = TRUE)
-
-saveRDS(
-  list(obsLR_GD = obsLR_GD, simLR_GD = simLR_GD, p_GD = p_GD), 
-  here("data", "lrt_bootstrap_GD.rds")
-)
-```
+We use a parametric LRT bootstrap to assess the statistical support for the effects of genetic diversity on our alternative model. We used the simulateLRT function from the DHARMa package and tested the full model (with species random effect) against a null model without genetic diversity or any of its interactions. We ran the LRT bootstrap in a separate script (lrt-bootstrap.R) and read in the results here.
 
 ### There is no evidence that including any effect of genetic diversity improves model fit
 ```{r lrtbootstrapGDresults}
-lrt_results_GD <- readRDS(here("data", "lrt_bootstrap_GD.rds"))
-obsLR_GD <- lrt_results_GD$obsLR_GD
-simLR_GD <- lrt_results_GD$simLR_GD
-p_GD <- lrt_results_GD$p_GD
-cat("Bootstrap LRT p-value:", p_GD)
+lrt_res<-readRDS(here("data", "lrt_bootstrap.rds"))
+lrt_res
 ```
 
 ## Corrected bootstrap
