@@ -477,7 +477,7 @@ MuMIn::r.squaredGLMM(reweighted)
 
 ## Weighting simulation
 The effects of summing the weights to 1 can also be seen in a simple simulation
-```{r reweight}
+```{r weightsims}
 group <- rep(1:5, each=20)
 x     <- rnorm(100)
 y     <- rgamma(100, 2, 2/exp(1 + 0.5*x + rep(rnorm(5,0,0.6), each=20)))
